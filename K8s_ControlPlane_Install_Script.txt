@@ -1,0 +1,138 @@
+# Disable apparmor
+sudo systemctl stop apparmor
+sudo systemctl disable apparmor
+
+# Update the package list
+sudo apt update
+
+# Install Docker with the following command
+sudo apt install docker.io -y
+
+# Set Docker to launch on boot by entering
+sudo systemctl enable docker
+
+# Add Kubernetes Signing Key
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.30/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+# To add the Kubernetes repository to your list, enter this command on each node
+echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.30/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
+
+# Ensure all packages are up to date
+sudo apt update
+
+# Install Kubernetes Tools
+sudo apt install kubeadm kubelet kubectl
+
+# Mark the packages as held back to prevent automatic installation, upgrade, or removal
+sudo apt-mark hold kubeadm kubelet kubectl
+
+# Verify the installation with
+kubeadm version
+
+# Disable all swap spaces with the swapoff command
+sudo swapoff -a
+
+# Then use the sed command below to make the necessary adjustments to the /etc/fstab file
+sudo sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
+
+# Load the required containerd modules. Start by opening the containerd configuration file in a text editor, such as nano
+sudo nano /etc/modules-load.d/containerd.conf
+
+# Add the following two lines to the file
+overlay
+br_netfilter
+
+# Next, use the modprobe command to add the modules
+sudo modprobe overlay
+sudo modprobe br_netfilter
+
+# Open the kubernetes.conf file to configure Kubernetes networking
+sudo nano /etc/sysctl.d/kubernetes.conf
+
+# Add the following lines to the file
+net.bridge.bridge-nf-call-ip6tables = 1
+net.bridge.bridge-nf-call-iptables = 1
+net.ipv4.ip_forward = 1
+
+# Reload the configuration by typing
+sudo sysctl --system
+
+# Decide which server will be the master node. Then, enter the command on that node to name it accordingly
+sudo hostnamectl set-hostname master-node
+
+# Next, set the hostname on the first worker node by entering the following command
+sudo hostnamectl set-hostname worker-node01
+
+# Edit the hosts file on each node by adding the IP addresses and hostnames of the servers that will be part of the cluster
+sudo nano /etc/hosts
+
+## Initialize Kubernetes on Master Node
+# Open the kubelet file in a text editor
+sudo nano /etc/default/kubelet
+
+# Add the following line to the file
+KUBELET_EXTRA_ARGS="--cgroup-driver=cgroupfs"
+
+# Reload the configuration and restart the kubelet
+sudo systemctl daemon-reload && sudo systemctl restart kubelet
+
+# Open the Docker daemon configuration file
+sudo nano /etc/docker/daemon.json
+
+# Append the following configuration block
+{
+      "exec-opts": ["native.cgroupdriver=systemd"],
+      "log-driver": "json-file",
+      "log-opts": {
+      "max-size": "100m"
+   },
+       "storage-driver": "overlay2"
+       }
+
+# Reload the configuration and restart Docker
+sudo systemctl daemon-reload && sudo systemctl restart docker
+
+# Open the kubeadm configuration file
+sudo nano /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
+
+# Add the following line to the file
+Environment="KUBELET_EXTRA_ARGS=--fail-swap-on=false"
+
+# Reload the configuration and restart the kubelet
+sudo systemctl daemon-reload && sudo systemctl restart kubelet
+
+# Finally, initialize the cluster by typing
+sudo kubeadm init --control-plane-endpoint=master-node --upload-certs
+
+# Once the operation finishes, the output displays a kubeadm join command at the bottom. Make a note of this command, as you will use it to join the worker nodes to the cluster
+
+# Create a directory for the Kubernetes cluster
+mkdir -p $HOME/.kube
+
+# Copy the configuration file to the directory
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+
+#  Change the ownership of the directory to the current user and group using the chown command
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+## Deploy Pod Network to Cluster
+# Use kubectl to install flannel manager
+kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
+
+# Untaint the node
+kubectl taint nodes --all node-role.kubernetes.io/control-plane-
+
+## Join Worker Node to Cluster
+# Stop and disable AppArmor
+ sudo systemctl stop apparmor && sudo systemctl disable apparmor
+
+# Restart containerd
+sudo systemctl restart containerd.service
+
+# Apply the kubeadm join command from Step 3 on worker nodes to connect them to the master node. Prefix the command with sudo
+sudo kubeadm join [master-node-ip]:6443 --token [token] --discovery-token-ca-cert-hash sha256:[hash]
+
+# After a few minutes, switch to the master server and enter the following command to check the status of the nodes
+kubectl get nodes
+
+# Source: https://phoenixnap.com/kb/install-kubernetes-on-ubuntu
